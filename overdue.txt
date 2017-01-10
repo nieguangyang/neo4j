@@ -1,0 +1,531 @@
+# ---------- overdue loan ---------- # April - September
+hive -e "
+use dante;
+
+drop table overdue_loan;
+
+create table overdue_loan as
+select lid,
+    uid,
+    mobile as pid,
+    apply_time,
+    apply_timestamp,
+    disburse_time,
+    disburse_timestamp,
+    installments,
+    payable_installments,
+    overdue_installments,
+    amount,
+    overdue_amount
+from
+(
+    select aid,
+        lid,
+        uid,
+        apply_time,
+        unix_timestamp(apply_time) as apply_timestamp,
+        disburse_time,
+        unix_timestamp(disburse_time) as disburse_timestamp,
+        installments,
+        if(payable_installments > installments, installments, payable_installments) as payable_installments,
+        overdue_installments,
+        amount,
+        overdue_amount
+    from
+    (
+        select id as aid,
+            substr(applied_at, 0, 19) as apply_time
+        from source_data.loan_applications
+        where (to_date(applied_at) >= '2016-04-01' and to_date(applied_at) <= '2016-09-30')
+    ) t1
+    join
+    (
+        select loan_application_id,
+            id as lid,
+            borrower_id as uid,
+            substr(disbursed_at, 0, 19) as disburse_time,
+            months as installments,
+            cast(datediff('2017-01-05', to_date(disbursed_at))/30 as int) as payable_installments,
+            overdue_months as overdue_installments,
+            amount,
+            overdue_amt_tot as overdue_amount
+        from source_data.loans
+        where overdue_months > 0
+        and to_date(disbursed_at) >= '2016-04-01'
+    ) t2
+    on t1.aid = t2.loan_application_id
+) t3
+join source_data.users_basic t4
+on t3.uid = t4.id
+order by apply_time;
+"
+
+hive -e "
+select * 
+from dante.overdue_loan 
+limit 100;
+"
+
+hive -e "
+select count(*) 
+from dante.overdue_loan;
+"
+29220
+
+# ---------- overdue phonenumber ---------- #
+hive -e "
+use dante;
+
+drop table overdue_phonenumber;
+
+create table overdue_phonenumber as
+select pid,
+    count(*) as overdue_loans,
+    sum(installments) as installments,
+    sum(payable_installments) as payable_installments,
+    sum(overdue_installments) as overdue_installments,
+    sum(amount) as amount,
+    sum(overdue_amount) as overdue_amount,
+    max(apply_time) as last_apply_time,
+    max(apply_timestamp) as last_apply_timestamp
+from dante.overdue_loan
+group by pid;
+"
+
+hive -e "
+select * 
+from dante.overdue_phonenumber 
+limit 100;
+"
+
+hive -e "
+select count(*) 
+from dante.overdue_phonenumber;
+"
+27236
+
+# ---------- overdue calllog ---------- #
+hive -e "
+use dante;
+
+drop table overdue_calllog;
+
+create table overdue_calllog as
+select caller,
+    callee,
+    cnt,
+    duration,
+    last_contact_time,
+    unix_timestamp(last_contact_time) as last_contact_timestamp,
+    if(t4.pid is not null, 1, 0) as internal
+from
+(
+    select account as caller,
+        phonenumber as callee,
+        count(*) as cnt,
+        sum(lduration) as duration,
+        from_unixtime(floor(max(ldate)/1000)) as last_contact_time
+    from source_data.calllog_deduplication_parquet t1
+    join dante.overdue_phonenumber t2
+    on t1.account = t2.pid
+    where phonenumber rlike '^1(3[0-9]|4[57]|5[0-35-9]|7[01678]|8[0-9])\\\d{8}$'
+    and lduration >= 5
+    and account != phonenumber
+    and itype in (1, 2)
+    group by account, phonenumber
+) t3
+left join dante.overdue_phonenumber t4
+on t3.callee = t4.pid;
+"
+
+hive -e "
+select * 
+from dante.overdue_calllog 
+limit 100;
+"
+
+hive -e "
+select internal, count(*) 
+from dante.overdue_calllog 
+group by internal;
+"
+0	1204686
+1	3291
+
+# ---------- overdue phonebook ---------- #
+hive -e "
+use dante;
+
+drop table overdue_phonebook;
+
+create table overdue_phonebook as 
+select caller, 
+    callee, 
+    last_contact_time, 
+    unix_timestamp(last_contact_time) as last_contact_timestamp,
+    if(t7.pid is not null, 1, 0) as internal 
+from 
+(
+    select caller, 
+        callee, 
+        max(last_contact_time) as last_contact_time 
+    from 
+    ( 
+        select account as caller, 
+            phonenumber as callee, 
+            from_unixtime(floor(lasttimecontact/1000)) as last_contact_time 
+        from source_data.phonebook_deduplication_parquet t1 
+        join dante.overdue_phonenumber t2 
+        on t1.account = t2.pid 
+        where phonenumber rlike '^1(3[0-9]|4[57]|5[0-35-9]|7[01678]|8[0-9])\\\d{8}$' 
+        and account != phonenumber 
+        union all 
+        select account as caller, 
+            phonenumber as callee, 
+            substr(lastrecordtime, 0, 19) as last_contact_time 
+        from source_data.phonebookios_deduplication_parquet t3 
+        join dante.overdue_phonenumber t4 
+        on t3.account = t4.pid 
+        where phonenumber rlike '^1(3[0-9]|4[57]|5[0-35-9]|7[01678]|8[0-9])\\\d{8}$' 
+        and account != phonenumber 
+    ) t5 
+    group by caller, callee 
+) t6 
+left join dante.overdue_phonenumber t7 
+on t6.callee = t7.pid;
+"
+
+hive -e "
+select * 
+from dante.overdue_phonebook 
+limit 100;
+"
+
+hive -e "
+select internal, count(*) 
+from dante.overdue_phonebook 
+group by internal;
+"
+0	5806107
+1	7298
+
+hive -e "
+select internal, count(*) 
+from dante.overdue_phonebook 
+where last_contact_timestamp > 0 
+group by internal;
+"
+0	4026021
+1	6056
+
+# ---------- nodes and internal relationships ---------- #
+hive -e "
+select *
+from dante.overdue_phonenumber;
+" > overdue_phonenumber.csv
+
+hive -e "
+select * 
+from dante.overdue_calllog 
+where internal = 1;
+" > overdue_calllog_internal.csv
+
+hive -e "
+select * 
+from dante.overdue_phonebook 
+where internal = 1;
+" > overdue_phonebook_internal.csv
+
+# ---------- overdue phonenumber supplementary ---------- #
+hive -e "
+use dante;
+
+drop table overdue_phonenumber_supplementary;
+
+create table overdue_phonenumber_supplementary as 
+select callee, 
+    count(distinct caller) as caller_cnt 
+from 
+( 
+    select caller, 
+        callee 
+    from dante.overdue_calllog 
+    where internal = 0 
+    union all 
+    select caller, 
+        callee 
+    from dante.overdue_phonebook 
+    where internal = 0 
+) t 
+group by callee 
+order by caller_cnt desc;
+"
+
+hive -e "
+select * 
+from dante.overdue_phonenumber_supplementary 
+limit 100;
+"
+
+hive -e "
+select count(*) 
+from dante.overdue_phonenumber_supplementary;
+"
+6067527
+
+# ---------- nodes and internal relationships ---------- #
+hive -e "
+select *
+from dante.overdue_phonenumber_supplementary;
+" > overdue_phonenumber_supplementary.csv
+
+hive -e "
+select * 
+from dante.overdue_calllog 
+where internal = 0;
+" > overdue_calllog_external.csv
+
+hive -e "
+select * 
+from dante.overdue_phonebook 
+where internal = 0;
+" > overdue_phonebook_external.csv
+
+# ---------- application ---------- # 2017-01-01
+hive -e "
+use dante;
+
+drop table application;
+
+create table application as 
+select aid, 
+    uid, 
+    mobile as pid, 
+    apply_time, 
+    unix_timestamp(apply_time) as apply_timestamp 
+from 
+( 
+    select id as aid, 
+        borrower_id as uid, 
+        substr(applied_at, 0, 19) as apply_time 
+    from source_data.loan_applications 
+    where to_date(applied_at) = '2017-01-01' 
+) t1 
+join source_data.users_basic t2 
+on t1.uid = t2.id 
+order by apply_time;
+"
+
+hive -e "
+select * 
+from dante.application 
+limit 100;
+"
+
+hive -e "
+select count(*) 
+from dante.application;
+"
+14663
+
+hive -e "
+select count(*) 
+from dante.application t1 
+join dante.overdue_phonenumber_supplementary t2 
+on t1.pid = t2.callee;
+"
+362
+
+# ---------- application phonenumber ---------- #
+hive -e "
+use dante;
+
+drop table application_phonenumber;
+
+create table application_phonenumber as 
+select distinct pid 
+from dante.application;
+"
+
+hive -e "
+select count(*) 
+from dante.application_phonenumber;
+"
+14644
+
+# ---------- application calllog ---------- #
+hive -e "
+use dante;
+
+drop table application_calllog;
+
+create table application_calllog as 
+select account as caller, 
+    phonenumber as callee,  
+    count(*) as cnt, 
+    sum(lduration) as duration, 
+    from_unixtime(floor(max(ldate)/1000)) as last_contact_time, 
+    floor(max(ldate)/1000) as last_contact_timestamp 
+from source_data.calllog_deduplication_parquet t1 
+join dante.application_phonenumber t2 
+on t1.account = t2.pid 
+where phonenumber rlike '^1(3[0-9]|4[57]|5[0-35-9]|7[01678]|8[0-9])\\\d{8}$' 
+and lduration >= 5 
+and account != phonenumber 
+and itype in (1, 2) 
+group by account, phonenumber;
+"
+
+hive -e "
+select * 
+from dante.application_calllog 
+limit 100;
+"
+
+hive -e "
+select count(*) 
+from dante.application_calllog;
+"
+521717
+
+hive -e "
+select count(distinct caller) 
+from dante.application_calllog;
+"
+4794
+
+# ---------- application phonebook ---------- #
+hive -e "
+use dante;
+
+drop table application_phonebook;
+
+create table application_phonebook as 
+select caller, 
+    callee, 
+    max(last_contact_time) as last_contact_time, 
+    unix_timestamp(max(last_contact_time)) as last_contact_timestamp 
+from 
+( 
+    select account as caller, 
+        phonenumber as callee, 
+        from_unixtime(floor(lasttimecontact/1000)) as last_contact_time 
+    from source_data.phonebook_deduplication_parquet t1 
+    join dante.application_phonenumber t2 
+    on t1.account = t2.pid 
+    where phonenumber rlike '^1(3[0-9]|4[57]|5[0-35-9]|7[01678]|8[0-9])\\\d{8}$' 
+    and account != phonenumber 
+    union all 
+    select account as caller, 
+        phonenumber as callee, 
+        substr(lastrecordtime, 0, 19) as last_contact_time 
+    from source_data.phonebookios_deduplication_parquet t3 
+    join dante.application_phonenumber t4 
+    on t3.account = t4.pid 
+    where phonenumber rlike '^1(3[0-9]|4[57]|5[0-35-9]|7[01678]|8[0-9])\\\d{8}$' 
+    and account != phonenumber 
+) t5 
+group by caller, callee;
+"
+
+hive -e "
+select * 
+from dante.application_phonebook 
+limit 100;
+"
+
+hive -e "
+select count(*) 
+from dante.application_phonebook;
+"
+1529887
+
+hive -e "
+select count(distinct caller) 
+from dante.application_phonebook;
+"
+8861
+
+hive -e "
+use dante;
+
+drop table application_phonenumber_contact;
+
+create table application_phonenumber_contact as 
+select caller, 
+    callee, 
+    max(last_contact_time) as last_apply_time, 
+    max(last_contact_timestamp) as last_contact_timestamp 
+from 
+( 
+    select caller, 
+        callee, 
+        last_contact_time, 
+        last_contact_timestamp 
+    from dante.application_calllog 
+    union all 
+    select caller, 
+        callee, 
+        last_contact_time, 
+        last_contact_timestamp 
+    from dante.application_phonebook 
+) t 
+group by caller, callee;
+"
+
+hive -e "
+select count(*) 
+from dante.application_phonenumber_contact;
+"
+1891426
+
+hive -e "
+select count(distinct caller) 
+from dante.application_phonenumber_contact;
+"
+9024
+
+hive -e "
+use dante;
+
+drop table application_phonenumber_valid;
+
+create table application_phonenumber_valid as 
+select distinct caller 
+from dante.application_phonenumber_contact;
+"
+
+hive -e "
+select count(*) 
+from dante.application_phonenumber_valid;
+"
+9024
+
+hive -e "
+
+
+select caller, collee 
+from dante.application_phonenumber_contact t1 
+join dante.overdue_phonenumber t2 
+on t1.callee = t2.pid 
+union all 
+
+
+"
+
+# ---------- application nodes and relationships ---------- #
+hive -e "
+select *
+from dante.application;
+" > application.csv
+
+hive -e "
+select * 
+from dante.application_calllog;
+" > application_calllog.csv
+
+hive -e "
+select * 
+from dante.application_phonebook;
+" > application_phonebook.csv
+

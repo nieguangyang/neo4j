@@ -1,0 +1,229 @@
+hive -e "
+set hive.execution.engine=mr;
+
+use dante;
+
+drop table working_class_july;
+
+create table working_class_july as 
+select account as pid, 
+    min(staff_level) as level 
+from source_data.t_rules_engine 
+where (application_date >= '2016-07-01' and application_date <= '2016-07-31') 
+group by account;
+"
+
+hive -e "
+set hive.execution.engine=mr;
+
+use dante;
+
+drop table loans_july;
+
+create table loans_july as 
+select lid, 
+    uid, 
+    mobile as pid, 
+    apply_time, 
+    disburse_time, 
+    installments, 
+    payable_installments, 
+    overdue_installments, 
+    amount, 
+    overdue_amount 
+from 
+(
+    select t1.lid, 
+        uid, 
+        apply_time, 
+        disburse_time, 
+        installments, 
+        if(payable_installments > installments, installments, payable_installments) as payable_installments, 
+        overdue_installments, 
+        amount, 
+        overdue_amount 
+    from 
+    ( 
+        select id as lid, 
+            applied_at as apply_time 
+        from source_data.loan_applications 
+        where (to_date(applied_at) >= '2016-07-01' and to_date(applied_at) <= '2016-07-31') 
+    ) t1 
+    join 
+    ( 
+        select loan_application_id as lid, 
+            borrower_id as uid, 
+            disbursed_at as disburse_time, 
+            months as installments, 
+            cast(datediff('2016-12-26', to_date(disbursed_at))/30 as int) as payable_installments, 
+            overdue_months as overdue_installments, 
+            amount, 
+            overdue_amt_tot as overdue_amount 
+        from source_data.loans 
+        where to_date(disbursed_at) >= '2016-07-01' 
+    ) t2 
+    on t1.lid = t2.lid
+) t3 
+join source_data.users_basic t4 
+on t3.uid = t4.id 
+order by apply_time;
+"
+
+hive -e "
+select * 
+from dante.loans_july 
+limit 100;
+"
+
+hive -e "
+select count(*) 
+from dante.loans_july;
+"
+51659
+
+hive -e "
+set hive.execution.engine=mr;
+
+( 
+    select t1.*, 
+        t2.level 
+    from dante.loans_july t1 
+    join dante.working_class_july t2 
+    on t1.pid = t2.pid 
+) t3 
+
+join source_data.calllog_deduplication_parquet t2 
+on t1.lid = t2.id;
+"
+
+hive -e "
+set hive.execution.engine=mr;
+
+use dante;
+
+drop table loans_july_covered;
+
+create table loans_july_covered as 
+select t10.*, 
+    t11.level 
+from 
+( 
+    select t9.* 
+    from 
+    ( 
+        select distinct account as pid 
+        from 
+        ( 
+            select account 
+            from dante.overdue_phonenumbers t1 
+            join source_data.calllog_deduplication_parquet t2 
+            on t1.pid = t2.phonenumber 
+            where lduration >= 5 
+            and account != phonenumber 
+            and itype in (1, 2) 
+            union all 
+            select account 
+            from dante.overdue_phonenumbers t3 
+            join source_data.phonebook_deduplication_parquet t4 
+            on t3.pid = t4.phonenumber 
+            union all 
+            select account 
+            from dante.overdue_phonenumbers t5 
+            join source_data.phonebookios_deduplication_parquet t6 
+            on t5.pid = t6.phonenumber 
+        ) t7 
+    ) t8 
+    join dante.loans_july t9 
+    on t8.pid = t9.pid 
+) t10 
+left join dante.working_class_july t11 
+on t10.pid = t11.pid;
+"
+
+hive -e "
+set hive.execution.engine=mr;
+
+select count(*) 
+from dante.loans_july t1 
+join dante.working_class_july t2 
+on t1.pid = t2.pid 
+where overdue_installments > 0;
+"
+
+hive -e "
+set hive.execution.engine=mr;
+
+select count(*) 
+from dante.loans_july t1 
+join dante.working_class_july t2 
+on t1.pid = t2.pid 
+where level = 'C';
+"
+18328
+
+hive -e "
+set hive.execution.engine=mr;
+
+select count(*) 
+from dante.loans_july t1 
+join dante.working_class_july t2 
+on t1.pid = t2.pid 
+where overdue_installments > 0 
+and level = 'C';
+"
+5984
+
+hive -e "
+set hive.execution.engine=mr;
+
+select count(*) 
+from dante.loans_july_covered;
+"
+2360
+
+hive -e "
+set hive.execution.engine=mr;
+
+select count(*) 
+from dante.loans_july_covered 
+where overdue_installments > 0;
+"
+
+hive -e "
+set hive.execution.engine=mr;
+
+select count(*) 
+from dante.loans_july_covered 
+where level = 'C';
+"
+1408
+
+hive -e "
+set hive.execution.engine=mr;
+
+select count(*) 
+from dante.loans_july_covered 
+where level = 'C' 
+and overdue_installments > 0;
+"
+
+hive -e "
+set hive.execution.engine=mr;
+
+select count(*) 
+from dante.overdue_loans t1 
+join source_data.summary t2 
+on cast(t1.lid as string) = t2.loanid;
+"
+
+hive -e "
+select id 
+from source_data.summary 
+limit 100;
+"
+
+hive -e "
+select ldate 
+from source_data.calllog_deduplication_parquet 
+limit 100;
+"

@@ -1,0 +1,66 @@
+match (n) return n limit 100;
+match (n) return n.pid limit 100;
+
+match ()-[r]->() return count(r);
+
+match (p1:phonenumber {pid: '13972229841'})
+with p1
+match (p1)--(p2)
+with p1, p2
+match (p2)--(p3)
+with p1, p2, p3
+match (p3)--(p4)
+return p1, p2, p3, p4;
+
+match (p1:phonenumber {pid: '13895694299'})
+with p1
+match (p1)--(p2)
+with p1, p2
+match (p2)--(p3)
+with p1, p2, p3
+match (p3)--(p4)
+return p1, p2, p3, p4;
+
+match (p1)
+where p1.lst_apl >= '2016-07-01 00:00:00'
+with p1 
+match (p1)--(p2)
+where p2.lst_apl >= '2016-07-01 00:00:00'
+with p1, count(p2) as cnt 
+order by cnt desc
+limit 100
+return p1.pid, cnt;
+
+match (a:application)-->(p:overdue)
+with a, count(distinct p) as cnt
+order by cnt desc
+return a.pid, cnt
+limit 10;
+
+match (a:application {pid: '13986394477'})
+with a
+match (a)--(n1)
+with a, n1
+match (n1)--(n2)
+with a, n1, n2
+match (n2)--(n3)
+return a, n1, n2, n3;
+
+match (a1:application)--(a2:application)
+with a1, count(distinct a2) as cnt
+order by cnt desc
+return a1.pid, cnt
+limit 10;
+
+
+
+
+
+
+
+
+
+
+
+
+
